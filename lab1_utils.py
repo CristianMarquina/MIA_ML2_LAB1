@@ -1,9 +1,59 @@
 import math
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+
+
 from collections import deque
+from sklearn.metrics import mean_absolute_error
 
 # Online Libraries (River)
 from river import base
 
+def plot_predictions(model, X_scaled, y_real, df, set_name, model_name='Model'):
+    y_pred = model.predict(X_scaled)
+    mae = mean_absolute_error(y_real, y_pred)
+    dates = pd.to_datetime(df.loc[y_real.index, 'Date'])
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+    ax.plot(dates, y_real.values, label='Real (Target High)', color='steelblue', linewidth=1.5)
+    ax.plot(dates, y_pred,        label=f'{model_name} Prediction', color='tomato', linewidth=1.5, linestyle='--')
+
+    ax.set_title(f'{model_name}: Real vs Predicted ({set_name} Set)\nMAE: {mae:.4f}')
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Price (USD)')
+    ax.legend()
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+    return mae
+
+def plot_predictions_LPM(y_real, y_pred, date_index, df, set_name, model_name='LPM'):
+    """
+    Plot real vs predicted values for LPM models.
+    Uses date_index (pandas Index) to look up dates from the global df.
+    """
+    mae = mean_absolute_error(y_real, y_pred)
+    dates = pd.to_datetime(df.loc[date_index, 'Date'])
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+    ax.plot(dates.values, y_real, label='Real (Target High)', color='steelblue', linewidth=1.5)
+    ax.plot(dates.values, y_pred, label=f'{model_name} Prediction', color='tomato', linewidth=1.5, linestyle='--')
+
+    ax.set_title(f'{model_name}: Real vs Predicted ({set_name} Set)\nMAE: {mae:.4f}')
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Price (USD)')
+    ax.legend()
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+    return mae
 
 # --- Function to generate BATCH Features (Pandas) ---
 def get_batch_features_and_target(df_in):
