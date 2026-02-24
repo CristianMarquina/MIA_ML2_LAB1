@@ -3,14 +3,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-
 from collections import deque
 from sklearn.metrics import mean_absolute_error
 
 # Online Libraries (River)
-from river import base
+from river import base, drift
 
-def plot_predictions(model, X_scaled, y_real, df, set_name, model_name='Model'):
+
+def plot_predictions(model, X_scaled, y_real, df, set_name, model_name='Model', filename=None):
     y_pred = model.predict(X_scaled)
     mae = mean_absolute_error(y_real, y_pred)
     dates = pd.to_datetime(df.loc[y_real.index, 'Date'])
@@ -27,11 +27,17 @@ def plot_predictions(model, X_scaled, y_real, df, set_name, model_name='Model'):
     ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
     plt.xticks(rotation=45)
     plt.tight_layout()
+
+    if filename is not None:
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Plot saved as '{filename}'")
+    
     plt.show()
 
     return mae
 
-def plot_predictions_LPM(y_real, y_pred, date_index, df, set_name, model_name='LPM'):
+
+def plot_predictions_LPM(y_real, y_pred, date_index, df, set_name, model_name='LPM', filename=None):
     """
     Plot real vs predicted values for LPM models.
     Uses date_index (pandas Index) to look up dates from the global df.
@@ -51,9 +57,15 @@ def plot_predictions_LPM(y_real, y_pred, date_index, df, set_name, model_name='L
     ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
     plt.xticks(rotation=45)
     plt.tight_layout()
+
+    if filename is not None:
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Plot saved as '{filename}'")
+    
     plt.show()
 
     return mae
+
 
 # --- Function to generate BATCH Features (Pandas) ---
 def get_batch_features_and_target(df_in):
@@ -91,6 +103,89 @@ def get_batch_features_and_target(df_in):
     y = df_temp['Target_High']
     
     return X, y
+
+
+def analyze_and_plot_drift_batch(model, X_scaled, y_real, df, set_name, model_name='Batch Model', filename=None):
+    """
+    Calculates predictions for a batch model, computes the sequential absolute error, 
+    and uses ADWIN and Page-Hinkley to detect concept drift.
+    Optionally saves the plot to a file.
+    """
+    print(f"\n--- Analyzing Concept Drift for {model_name} ({set_name} Set) ---")
+    
+    # 1. Get predictions and align dates (Same logic as your plot_predictions)
+    y_pred = model.predict(X_scaled)
+
+    # If predictions are in shape (N, 1) like in Keras, flatten them to (N,) -- necessary for the MLP model
+    if hasattr(y_pred, 'flatten'):
+        y_pred = y_pred.flatten()
+
+    dates = pd.to_datetime(df.loc[y_real.index, 'Date']).values
+    y_real_vals = y_real.values
+    
+    # 2. Initialize detectors
+    adwin = drift.ADWIN()
+    ph = drift.PageHinkley()
+    
+    errors = []
+    adwin_drifts = []
+    ph_drifts = []
+    
+    # 3. Feed the error stream sequentially to the detectors
+    # Even though it's a batch model, we evaluate its errors chronologically
+    for i in range(len(y_real_vals)):
+        error = abs(y_real_vals[i] - y_pred[i])
+        errors.append(error)
+        
+        # Update detectors
+        adwin.update(error)
+        ph.update(error)
+        
+        # Check for drift and save the EXACT DATE it happened
+        if adwin.drift_detected:
+            adwin_drifts.append(dates[i])
+        if ph.drift_detected:
+            ph_drifts.append(dates[i])
+            
+    print(f"ADWIN detected {len(adwin_drifts)} drift points.")
+    print(f"Page-Hinkley detected {len(ph_drifts)} drift points.")
+    
+    # 4. Plotting
+    fig, ax = plt.subplots(figsize=(14, 5))
+    
+    # Plot raw errors
+    ax.plot(dates, errors, label='Absolute Error', color='lightgray', linewidth=1)
+    
+    # Plot moving average of errors to see the trend
+    error_series = pd.Series(errors)
+    ax.plot(dates, error_series.rolling(10).mean(), label='Error Moving Average (10)', color='blue', linewidth=1.5)
+    
+    # Plot ADWIN drifts (Red dashed lines)
+    for i, d in enumerate(adwin_drifts):
+        ax.axvline(x=d, color='red', linestyle='--', alpha=0.6, label='ADWIN Drift' if i == 0 else "")
+        
+    # Plot Page-Hinkley drifts (Green dotted lines)
+    for i, d in enumerate(ph_drifts):
+        ax.axvline(x=d, color='green', linestyle=':', alpha=0.8, label='Page-Hinkley Drift' if i == 0 else "")
+        
+    ax.set_title(f'Concept Drift Detection on Absolute Error\n{model_name} ({set_name} Set)')
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Absolute Error (USD)')
+    ax.legend()
+    
+    # Date formatting (Same as your plotting function)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    
+    if filename is not None:
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Plot saved as '{filename}'")
+    
+    plt.show()
+    
+    return adwin_drifts, ph_drifts
 
 
 # --- Class for ONLINE Features (River) ---
@@ -143,3 +238,111 @@ class OnlineSPYFeatures(base.Transformer):
         self.prev_close = close
 
         return features
+    
+
+def plot_predictions_online(records, set_name, model_name='Online Model', filename=None):
+    """Plot real vs predicted values for online models using the records list."""
+    df_plot = pd.DataFrame(records)
+    df_plot['date'] = pd.to_datetime(df_plot['date'])
+    mae = mean_absolute_error(df_plot['y_real'], df_plot['y_pred'])
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+    ax.plot(df_plot['date'], df_plot['y_real'], label='Real (Target High)', color='steelblue', linewidth=1.5)
+    ax.plot(df_plot['date'], df_plot['y_pred'], label=f'{model_name} Prediction', color='tomato', linewidth=1.5, linestyle='--')
+
+    ax.set_title(f'{model_name}: Real vs Predicted ({set_name} Set)\nMAE: {mae:.4f}')
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Price (USD)')
+    ax.legend()
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+
+    if filename is not None:
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Plot saved as '{filename}'")
+    
+    plt.show()
+
+    return mae
+
+
+def analyze_and_plot_drift_online(records, model_name="Model", filename=None):
+    """
+    Takes a list of prediction records (dictionaries with 'date', 'y_real', 'y_pred')
+    calculates the absolute error stream, and uses ADWIN and Page-Hinkley to detect drift.
+    Optionally saves the plot to a file.
+    """
+    print(f"\n--- Analyzing Concept Drift for {model_name} ---")
+    
+    # Initialize detectors
+    adwin = drift.ADWIN()
+    ph = drift.PageHinkley()
+    
+    errors = []
+    dates = []
+    
+    adwin_drifts = []
+    ph_drifts = []
+    
+    # 1. Feed the error stream to the detectors
+    for record in records:
+        # Calculate Absolute Error
+        error = abs(record['y_real'] - record['y_pred'])
+        errors.append(error)
+        
+        # Convert to pandas datetime
+        current_date = pd.to_datetime(record['date'])
+        dates.append(current_date)
+        
+        # Update detectors
+        adwin.update(error)
+        ph.update(error)
+        
+        # Check for drift and save the EXACT DATE it happened
+        if adwin.drift_detected:
+            adwin_drifts.append(current_date)
+        if ph.drift_detected:
+            ph_drifts.append(current_date)
+            
+    print(f"ADWIN detected {len(adwin_drifts)} drift points.")
+    print(f"Page-Hinkley detected {len(ph_drifts)} drift points.")
+    
+    # 2. Plotting the Error Stream and Drift Points
+    fig, ax = plt.subplots(figsize=(14, 5))
+    
+    # Plot raw errors using the dates for the X-axis
+    ax.plot(dates, errors, label='Absolute Error', color='lightgray', linewidth=1)
+    
+    # Add a moving average to make the error trend easier to see
+    error_series = pd.Series(errors)
+    ax.plot(dates, error_series.rolling(10).mean(), label='Error Moving Average (10)', color='blue', linewidth=1.5)
+    
+    # Plot ADWIN drifts
+    for i, d in enumerate(adwin_drifts):
+        ax.axvline(x=d, color='red', linestyle='--', alpha=0.6, label='ADWIN Drift' if i == 0 else "")
+        
+    # Plot Page-Hinkley drifts
+    for i, d in enumerate(ph_drifts):
+        ax.axvline(x=d, color='green', linestyle=':', alpha=0.8, label='Page-Hinkley Drift' if i == 0 else "")
+        
+    ax.set_title(f"Concept Drift Detection on Absolute Error ({model_name})")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Absolute Error (USD)")
+    ax.legend()
+    
+    # Date formatting (Same logic as plot_predictions)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+    plt.xticks(rotation=45)
+    
+    plt.tight_layout()
+    
+    if filename is not None:
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Plot saved as '{filename}'")
+    
+    plt.show()
+    
+    return adwin_drifts, ph_drifts
